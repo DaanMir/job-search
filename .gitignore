@@ -9,6 +9,8 @@
 # DATA FILES
 # ===================
 backend/data.json
+files.zip
+*.zip
 
 # ===================
 # BUILD OUTPUTS

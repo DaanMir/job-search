@@ -1,97 +1,84 @@
-# 🔍 Job Scout — PM Job Screener
+# 🔍 Job Scout — AI-Powered Job Screener for Product Managers
 
-Sistema local de screening de vagas para Product Manager com scoring por IA (Groq).
+Local job screening system for Product Manager positions with AI scoring using Groq (LLaMA 3.1).
 
-## Setup em 5 minutos
+## Quick Setup (5 minutes)
 
 ### 1. Backend
 ```bash
 cd backend
 npm install
 cp .env.example .env
-# Edite o .env com suas API keys
+# Edit .env with your API keys
 node server.js
 ```
 
-### 2. Frontend (novo terminal)
+### 2. Frontend (new terminal)
 ```bash
 cd frontend
 npm install
 npm start
 ```
 
-Abre em **http://localhost:3000** automaticamente.
+Opens at **http://localhost:3000**
 
 ---
 
-## Fontes de vagas
+## Job Sources
 
-| Fonte | Método | Limite | Key necessária |
-|-------|--------|--------|----------------|
-| Remotive | API pública | Ilimitado | ❌ |
-| Himalayas | API pública | Ilimitado | ❌ |
-| **LinkedIn Direct** | npm scraping público | Ilimitado | ❌ |
-| **WeWorkRemotely** | RSS scraper próprio | Ilimitado | ❌ |
-| **Wellfound** | Playwright scraper próprio | Ilimitado | ❌ |
-| **JSearch** (LinkedIn + Indeed + Glassdoor) | RapidAPI | 200 req/mês free | ✅ JSEARCH_API_KEY |
-| SerpAPI (Google Jobs) | API | 100 req/mês free | ✅ SERP_API_KEY (backup) |
-| Google Custom Search | API | 100 req/dia free | ✅ Opcional |
+| Source | Method | Limit | Key Required |
+|--------|--------|-------|--------------|
+| Remotive | Public API | Unlimited | ❌ |
+| Himalayas | Public API | Unlimited | ❌ |
+| **LinkedIn Direct** | npm public scraping | Unlimited | ❌ |
+| **WeWorkRemotely** | Custom RSS scraper | Unlimited | ❌ |
+| **Wellfound** | Custom Playwright scraper | Unlimited | ❌ |
+| **Jobspresso** | Custom scraper | Unlimited | ❌ |
+| **WorkingNomads** | Custom scraper | Unlimited | ❌ |
+| **EuroRemoteJobs** | Custom scraper | Unlimited | ❌ |
+| **JSearch** (LinkedIn + Indeed + Glassdoor) | RapidAPI | 200 req/month free | ✅ JSEARCH_API_KEY |
+| SerpAPI (Google Jobs) | API | 100 req/month free | ✅ SERP_API_KEY (backup) |
 
-> WeWorkRemotely usa RSS público — muito estável.
-> Wellfound usa Playwright (browser headless) — requer instalação do Chromium uma única vez.
-
-## Setup completo
-
-### 1. Backend
-```bash
-cd backend
-npm install
-
-# Instala o browser para o scraper do Wellfound (só precisa fazer uma vez)
-npx playwright install chromium
-
-cp .env.example .env
-# Edite o .env com suas API keys
-node server.js
-```
-
-### 2. Frontend (novo terminal)
-```bash
-cd frontend
-npm install
-npm start
-```
-
-Abre em **http://localhost:3000** automaticamente.
+> WeWorkRemotely uses public RSS — very stable.
+> Wellfound uses Playwright (headless browser) — requires Chromium installation once.
 
 ---
 
-## Como obter as keys
+## Getting API Keys
 
-| Key | Onde |
-|-----|------|
+| Key | Where |
+|-----|-------|
 | `GROQ_API_KEY` | https://console.groq.com |
-| `JSEARCH_API_KEY` | https://rapidapi.com → buscar "JSearch by OpenWeb Ninja" → Subscribe Free |
-| `SERP_API_KEY` | https://serpapi.com (backup, já pode ter) |
-| `GOOGLE_API_KEY` + `GOOGLE_CX` | console.cloud.google.com + programmablesearchengine.google.com (opcional) |
+| `JSEARCH_API_KEY` | https://rapidapi.com → search "JSearch by OpenWeb Ninja" → Subscribe Free |
+| `SERP_API_KEY` | https://serpapi.com (backup, you may already have it) |
 
 ---
 
-## Como usar
+## How to Use
 
-1. **Run Scan** — busca vagas em todas as fontes, o Groq faz scoring de cada JD
-2. Veja o **ranking** com score, highlights e red flags de cada vaga
-3. Clique **Mark as Applied** nas que você aplicar
-4. Acompanhe status na aba **Applications** (applied → interview → offer / rejected)
-5. Aba **History** carrega qualquer scan anterior com os JDs salvos
+1. **Run Scan** — searches jobs across all sources, Groq scores each job description
+2. View **ranking** with score, highlights, and red flags for each job
+3. Click **Mark as Applied** on jobs you apply to
+4. Track status in **Applications** tab (applied → interview → offer / rejected)
+5. **History** tab loads any previous scan with saved job descriptions
 
 ---
 
-## Personalizar critérios
+## Customize Criteria
 
-Edite **`backend/config.js`** para ajustar:
-- Títulos aceitos / bloqueados
-- Skills prioritárias  
-- Faixa salarial mínima
+Edit **`backend/config.js`** to adjust:
+- Accepted / blocked job titles
+- Priority skills
+- Minimum salary range
 - Deal breakers
-- Queries de busca
+- Search queries
+
+---
+
+## Architecture
+
+- **Backend**: Node.js + Express API (port 3001)
+- **Frontend**: React (port 3000, proxied to backend)
+- **AI Scoring**: Groq LLaMA 3.1-8b-instant
+- **Storage**: Local JSON file (data.json)
+- **Scraping**: Mix of public APIs, RSS feeds, and Playwright
