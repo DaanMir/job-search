@@ -76,19 +76,33 @@ export function isUSOnly(job) {
   return false;
 }
 
-// ─────────────────────────────────────────────
-// DEDUP POR EMPRESA + TÍTULO-BASE
-// Remove variantes de localização da mesma vaga
-// Ex: "PM - AI Travel (Spain)" e "PM - AI Travel (Ireland)" → mesmo título-base
-// ─────────────────────────────────────────────
 function normalizeTitleForDedup(title = "") {
   return title
     .toLowerCase()
-    // Remove sufixos de localização entre parênteses: (Spain), (100% Remote - UK), (Remote - Ireland)
     .replace(/\s*\([^)]*\)/g, "")
-    // Remove sufixos após traço com localização comum
     .replace(/\s*[-–]\s*(remote|worldwide|global|eu|europe|uk|usa|germany|france|spain|ireland|portugal|italy|netherlands)[^-–]*/gi, "")
     .trim();
+}
+
+// ─────────────────────────────────────────────
+// SCRAPER HEALTH WRAPPER
+// Wraps each scraper call and tracks status/count/error per source.
+// ─────────────────────────────────────────────
+async function runScraper(name, fn) {
+  try {
+    const results = await fn();
+    const count = Array.isArray(results) ? results.length : 0;
+    return {
+      jobs: results || [],
+      health: { source: name, status: count > 0 ? "ok" : "empty", count, error: null },
+    };
+  } catch (err) {
+    console.error(`[scraper:${name}] error:`, err.message);
+    return {
+      jobs: [],
+      health: { source: name, status: "error", count: 0, error: err.message },
+    };
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -398,62 +412,64 @@ function extractCompany(snippet = "") {
 
 // ─────────────────────────────────────────────
 // AGREGADOR PRINCIPAL
+// Retorna { jobs, scraperHealth } para o server.js
 // ─────────────────────────────────────────────
 export async function fetchAllJobs() {
   console.log("🔍 Fetching jobs from all sources...");
 
-  const [remotive, himalayas, linkedInDirect, jsearch, serp, google, wwr, wellfound, remoteCo, workingNomads, jobspresso, euroRemote] =
-    await Promise.allSettled([
-      fetchRemotive(),
-      fetchHimalayas(),
-      fetchLinkedInDirect(),
-      fetchJSearch(),
-      fetchViaSerpApi(),
-      fetchViaGoogleCustomSearch(),
-      fetchWWR(),
-      fetchWellfound(),
-      fetchRemoteCo(),
-      fetchWorkingNomads(),
-      fetchJobspresso(),
-      fetchEuroRemoteJobs(),
-    ]);
+  const [
+    remotive, himalayas, linkedInDirect, jsearch, serp, google,
+    wwr, wellfound, remoteCo, workingNomads, jobspresso, euroRemote,
+  ] = await Promise.allSettled([
+    runScraper("Remotive", fetchRemotive),
+    runScraper("Himalayas", fetchHimalayas),
+    runScraper("LinkedIn", fetchLinkedInDirect),
+    runScraper("JSearch", fetchJSearch),
+    runScraper("SerpAPI", fetchViaSerpApi),
+    runScraper("Google", fetchViaGoogleCustomSearch),
+    runScraper("WeWorkRemotely", fetchWWR),
+    runScraper("Wellfound", fetchWellfound),
+    runScraper("Remote.co", fetchRemoteCo),
+    runScraper("WorkingNomads", fetchWorkingNomads),
+    runScraper("Jobspresso", fetchJobspresso),
+    runScraper("EuroRemoteJobs", fetchEuroRemoteJobs),
+  ]);
 
-  const linkedInJobs = linkedInDirect.status === "fulfilled" ? linkedInDirect.value : [];
+  // Collect health per source (runScraper never rejects, so status is always 'fulfilled')
+  const scraperHealth = {};
+  for (const result of [remotive, himalayas, linkedInDirect, jsearch, serp, google, wwr, wellfound, remoteCo, workingNomads, jobspresso, euroRemote]) {
+    if (result.status === "fulfilled") {
+      const h = result.value.health;
+      scraperHealth[h.source] = { status: h.status, count: h.count, error: h.error };
+    }
+  }
+
+  const linkedInJobs = linkedInDirect.status === "fulfilled" ? linkedInDirect.value.jobs : [];
   const linkedInEnriched = await enrichLinkedInJDs(linkedInJobs);
 
-  const sourceSummary = {
-    Remotive: remotive.status === "fulfilled" ? remotive.value.length : 0,
-    Himalayas: himalayas.status === "fulfilled" ? himalayas.value.length : 0,
-    LinkedIn: linkedInEnriched.length,
-    "LinkedIn w/ JD": linkedInEnriched.filter((j) => j.description?.length > 100).length,
-    JSearch: jsearch.status === "fulfilled" ? jsearch.value.length : 0,
-    SerpAPI: serp.status === "fulfilled" ? serp.value.length : 0,
-    Google: google.status === "fulfilled" ? google.value.length : 0,
-    WeWorkRemotely: wwr.status === "fulfilled" ? wwr.value.length : 0,
-    Wellfound: wellfound.status === "fulfilled" ? wellfound.value.length : 0,
-    "Remote.co": remoteCo.status === "fulfilled" ? remoteCo.value.length : 0,
-    WorkingNomads: workingNomads.status === "fulfilled" ? workingNomads.value.length : 0,
-    Jobspresso: jobspresso.status === "fulfilled" ? jobspresso.value.length : 0,
-    EuroRemoteJobs: euroRemote.status === "fulfilled" ? euroRemote.value.length : 0,
-  };
+  const sourceSummary = {};
+  for (const [key, val] of Object.entries(scraperHealth)) {
+    sourceSummary[key] = val.count;
+  }
+  sourceSummary["LinkedIn w/ JD"] = linkedInEnriched.filter((j) => j.description?.length > 100).length;
   console.log("📊 Jobs per source:", sourceSummary);
 
   const all = [
-    ...(remotive.status === "fulfilled" ? remotive.value : []),
-    ...(himalayas.status === "fulfilled" ? himalayas.value : []),
+    ...(remotive.value?.jobs || []),
+    ...(himalayas.value?.jobs || []),
     ...linkedInEnriched,
-    ...(jsearch.status === "fulfilled" ? jsearch.value : []),
-    ...(serp.status === "fulfilled" ? serp.value : []),
-    ...(google.status === "fulfilled" ? google.value : []),
-    ...(wwr.status === "fulfilled" ? wwr.value : []),
-    ...(wellfound.status === "fulfilled" ? wellfound.value : []),
-    ...(remoteCo.status === "fulfilled" ? remoteCo.value : []),
-    ...(workingNomads.status === "fulfilled" ? workingNomads.value : []),
-    ...(jobspresso.status === "fulfilled" ? jobspresso.value : []),
-    ...(euroRemote.status === "fulfilled" ? euroRemote.value : []),
+    ...(jsearch.value?.jobs || []),
+    ...(serp.value?.jobs || []),
+    ...(google.value?.jobs || []),
+    ...(wwr.value?.jobs || []),
+    ...(wellfound.value?.jobs || []),
+    ...(remoteCo.value?.jobs || []),
+    ...(workingNomads.value?.jobs || []),
+    ...(jobspresso.value?.jobs || []),
+    ...(euroRemote.value?.jobs || []),
   ];
 
-  // Dedup por título-base + empresa (ignora variantes de localização no título)
+  // Dedup por título-base + empresa
   const seen = new Set();
   const unique = all.filter((job) => {
     const titleBase = normalizeTitleForDedup(job.title);
@@ -473,5 +489,11 @@ export async function fetchAllJobs() {
   });
   console.log(`  ✂️  US-only filter: ${unique.length} → ${nonUS.length} jobs`);
   console.log(`✅ Total unique jobs fetched: ${nonUS.length}`);
-  return nonUS;
+
+  // Update LinkedIn count in scraperHealth to reflect enriched version
+  if (scraperHealth["LinkedIn"]) {
+    scraperHealth["LinkedIn"].count = linkedInEnriched.length;
+  }
+
+  return { jobs: nonUS, scraperHealth };
 }

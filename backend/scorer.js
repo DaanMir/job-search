@@ -1,6 +1,7 @@
 import Groq from "groq-sdk";
 import axios from "axios";
 import { PROFILE, CANDIDATE_PROFILE } from "./config.js";
+import { getKnownJobIds, getCachedJob } from "./storage.js";
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
@@ -11,7 +12,6 @@ const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const DOMAIN_KEYWORDS = [
   { terms: ["llm", "large language model"], points: 8 },
   { terms: ["mcp", "model context protocol"], points: 8 },
-  // FIX: use regex /\bai\b/ instead of " ai " string — catches AI-native, AI/ML, GenAI, etc.
   { terms: ["ai agent", "ai agents", "agentic"], points: 7 },
   { terms: ["machine learning", "ml platform"], points: 6 },
   { terms: ["artificial intelligence"], points: 5 },
@@ -29,8 +29,7 @@ const DOMAIN_KEYWORDS = [
   { terms: ["python", "c#", ".net"], points: 2 },
 ];
 
-// Standalone AI keyword matched via regex (word boundary) — separate from DOMAIN_KEYWORDS
-// to avoid string-match limitations. Adds points only once even if both regex and terms match.
+// Standalone AI keyword matched via regex (word boundary)
 const AI_STANDALONE_REGEX = /\bai\b/i;
 const AI_STANDALONE_POINTS = 5;
 
@@ -47,7 +46,6 @@ const TITLE_SCORES = [
   { terms: ["product owner"], points: 3 },
 ];
 
-// Termos que indicam relocation obrigatória ou restrição de residência
 const RELOCATION_TERMS = [
   "requires relocation",
   "must relocate",
@@ -96,9 +94,8 @@ function calcBaseScore(job) {
     }
   }
 
-  // 2b. Standalone AI keyword (regex, word-boundary safe)
+  // 2b. Standalone AI keyword via regex
   if (AI_STANDALONE_REGEX.test(text)) {
-    // Only add if not already credited via "artificial intelligence" or "generative ai"
     const alreadyCreditedAI = matched.some((m) =>
       ["artificial intelligence", "generative ai", "gen ai", "genai", "ai agent", "ai agents", "agentic"].includes(m)
     );
@@ -111,11 +108,10 @@ function calcBaseScore(job) {
   const cappedDomain = Math.min(domainPoints, 40);
   score += cappedDomain;
   if (cappedDomain > 0) {
-    scoreBreakdown.push({ rule: "domain keywords", pts: cappedDomain, matched });
+    scoreBreakdown.push({ rule: "domain keywords", pts: cappedDomain, matched: [...matched] });
   }
 
-  // 3. Localização
-  // FIX: UK bônus reduzido para 8 (igual worldwide) — UK frequentemente exige right to work
+  // 3. Localização — UK reduzido para 8 (igual worldwide)
   let locPts = 0;
   let locRule = "";
   if (/\beurope\b|\beuropean\b|\beu\b|\bremote.*eu\b|\bitaly\b|\bgermany\b|\bfrance\b|\bspain\b|\bnetherlands\b|\bportugal\b/.test(loc)) {
@@ -125,7 +121,6 @@ function calcBaseScore(job) {
     locPts = 8;
     locRule = "location: worldwide";
   } else if (/uk|united kingdom|london|\bcet\b|\bcest\b/.test(loc)) {
-    // UK: same as worldwide (8) — UK roles often require right to work, which triggers -15 separately
     locPts = 8;
     locRule = "location: UK/CET";
   }
@@ -146,7 +141,7 @@ function calcBaseScore(job) {
     scoreBreakdown.push({ rule: "seniority in title", pts: 5 });
   }
 
-  // 6. Penalização por relocation / restrição de residência
+  // 6. Penalização por relocation
   const fullText = `${desc} ${loc}`;
   const hasRelocation = RELOCATION_TERMS.some((t) => fullText.includes(t));
   if (hasRelocation) {
@@ -233,12 +228,9 @@ function isBlockedTitle(titleLower) {
   return PROFILE.dealBreakers.some((term) => titleLower.includes(term.toLowerCase()));
 }
 
-// FIX: strict allowlist-based PM check — removes broad 'product' fallback
-// that was passing Product Marketing, Product Designer, Product Analyst, etc.
+// FIX: strict allowlist — no more broad 'product' fallback
 function isNotPM(titleLower) {
-  // Normalize targetTitles to lowercase for comparison
   const acceptedTerms = PROFILE.targetTitles.map((t) => t.toLowerCase());
-  // Check if any accepted title is a substring of the job title
   return !acceptedTerms.some((accepted) => titleLower.includes(accepted));
 }
 
@@ -372,35 +364,47 @@ export async function scoreJob(job) {
 }
 
 export async function scoreAllJobs(jobs) {
-  console.log(`🤖 Scoring ${jobs.length} jobs (hybrid: deterministic + LLM quality bonus)...`);
+  // ─── INCREMENTAL SCAN: skip jobs already processed in previous scans ───
+  const knownIds = getKnownJobIds();
+  const newJobs = jobs.filter((j) => !knownIds.has(j.id));
+  const cachedJobs = jobs
+    .filter((j) => knownIds.has(j.id))
+    .map((j) => getCachedJob(j.id))
+    .filter(Boolean);
+
+  console.log(`🤖 Scoring ${newJobs.length} new jobs (${cachedJobs.length} retrieved from cache, ${jobs.length} total)...`);
+
   const scored = [];
   const batchSize = 3;
   const batchDelay = 4000;
 
-  for (let i = 0; i < jobs.length; i += batchSize) {
-    const batch = jobs.slice(i, i + batchSize);
+  for (let i = 0; i < newJobs.length; i += batchSize) {
+    const batch = newJobs.slice(i, i + batchSize);
     const results = await Promise.allSettled(batch.map(scoreJob));
     for (const r of results) {
       if (r.status === "fulfilled" && r.value !== null) scored.push(r.value);
     }
-    if (i + batchSize < jobs.length) {
+    if (i + batchSize < newJobs.length) {
       console.log(`  ⏳ Batch ${Math.ceil((i + batchSize) / batchSize)} done, waiting ${batchDelay / 1000}s...`);
       await new Promise((r) => setTimeout(r, batchDelay));
     }
   }
 
-  const filtered = scored
+  // Merge new scored + cached
+  const allScored = [...scored, ...cachedJobs];
+
+  const filtered = allScored
     .filter((j) => j.recommendation !== "SKIP" && j.score >= 35)
     .sort((a, b) => b.score - a.score);
 
   const dist = { "75-100": 0, "55-74": 0, "35-54": 0, "<35": 0 };
-  scored.forEach((j) => {
+  allScored.forEach((j) => {
     if (j.score >= 75) dist["75-100"]++;
     else if (j.score >= 55) dist["55-74"]++;
     else if (j.score >= 35) dist["35-54"]++;
     else dist["<35"]++;
   });
   console.log(`📊 Score distribution:`, dist);
-  console.log(`✅ ${filtered.length} relevant jobs after scoring`);
+  console.log(`✅ ${filtered.length} relevant jobs after scoring (${cachedJobs.length} from cache)`);
   return filtered;
 }
