@@ -241,90 +241,88 @@ export async function fetchHimalayas() {
 
 // ─────────────────────────────────────────────
 // LINKEDIN via Apify
-// Replaces linkedin-jobs-api npm package.
-// Actor: apify/linkedin-jobs-scraper
-// Free tier: $5/month → ~12.500 vagas/mês
-// Docs: https://apify.com/apify/linkedin-jobs-scraper
+// Actor: curious_coder/linkedin-jobs-scraper
+//   - Rating 4.9 (56 reviews), 29k users, maintained weekly
+//   - Pricing: $1.00 / 1,000 results → free $5/month = 5,000 jobs/month
+//   - Input: { queries: [LinkedIn search page URLs] }
+//   - Output fields: positionName, companyName, location, jobUrl, descriptionText, postedAt
+//
+// The Actor expects LinkedIn Jobs search URLs, not raw keywords.
+// We build them manually to control filters (remote, experience, date).
 // ─────────────────────────────────────────────
 
-const LINKEDIN_QUERIES = [
-  { keywords: "Senior Product Manager AI LLM",     location: "Europe",    remote: true },
-  { keywords: "Head of Product AI fintech",          location: "Europe",    remote: true },
-  { keywords: "Technical Product Manager AI agents", location: "Europe",    remote: true },
-  { keywords: "Lead Product Manager enterprise B2B", location: "Worldwide", remote: true },
-  { keywords: "Principal Product Manager AI ML",     location: "Europe",    remote: true },
-  { keywords: "Senior PM LLM open finance payments", location: "Europe",    remote: true },
+// LinkedIn search URL builder
+// f_WT=2 = remote, f_E=4,5,6 = senior+director+executive, f_TPR=r2592000 = past 30 days
+function buildLinkedInSearchUrl(keywords, location = "") {
+  const base = "https://www.linkedin.com/jobs/search/";
+  const params = new URLSearchParams({
+    keywords,
+    location: location || "Worldwide",
+    f_WT: "2",          // Remote
+    f_E: "4,5,6",       // Senior, Director, Executive
+    f_TPR: "r2592000",  // Past 30 days
+    sortBy: "DD",        // Most recent
+  });
+  return `${base}?${params.toString()}`;
+}
+
+const LINKEDIN_SEARCH_QUERIES = [
+  { keywords: "Senior Product Manager AI LLM",        location: "Europe" },
+  { keywords: "Head of Product AI fintech",            location: "Europe" },
+  { keywords: "Technical Product Manager AI agents",   location: "Europe" },
+  { keywords: "Lead Product Manager enterprise B2B",   location: "Worldwide" },
+  { keywords: "Principal Product Manager AI ML",       location: "Europe" },
+  { keywords: "Senior Product Manager open finance",   location: "Europe" },
 ];
 
 export async function fetchLinkedInViaApify() {
   if (!APIFY_TOKEN) {
-    console.warn("⚠️  APIFY_TOKEN not set — LinkedIn scraping disabled. Add token to .env to enable.");
+    console.warn("⚠️  APIFY_TOKEN not set — LinkedIn scraping disabled. Add it to .env to enable.");
     return [];
   }
 
-  // Build Apify Actor input — one entry per search query
-  // Actor: apify/linkedin-jobs-scraper
-  // https://apify.com/apify/linkedin-jobs-scraper
+  const searchUrls = LINKEDIN_SEARCH_QUERIES.map((q) =>
+    buildLinkedInSearchUrl(q.keywords, q.location)
+  );
+
+  // Actor: curious_coder~linkedin-jobs-scraper
+  // Input schema: https://apify.com/curious_coder/linkedin-jobs-scraper/input-schema
   const input = {
-    queries: LINKEDIN_QUERIES.map((q) => ({
-      query: q.keywords,
-      location: q.location,
-    })),
-    // Filters applied via Actor params
-    experienceLevel: ["SENIOR", "DIRECTOR", "EXECUTIVE"],
-    workType: ["REMOTE"],
-    publishedAt: "PAST_MONTH",
-    maxResults: 25,
-    proxy: {
-      useApifyProxy: true,
-      apifyProxyGroups: ["RESIDENTIAL"],
-    },
+    queries: searchUrls,
+    maxResults: 20, // per query — 6 queries × 20 = up to 120 jobs
+    // scrapeCompany not needed — just job data
   };
 
   try {
-    console.log("  🔵 Starting Apify LinkedIn Actor run...");
+    console.log(`  🔵 Starting Apify LinkedIn run (${searchUrls.length} queries)...`);
 
-    // Start the Actor run synchronously (waits for completion)
-    const runRes = await axios.post(
-      "https://api.apify.com/v2/acts/apify~linkedin-jobs-scraper/runs?waitForFinish=120",
+    // run-sync-get-dataset-items: runs Actor AND returns dataset in one HTTP call.
+    // Simpler than run → poll → fetch. Timeout 180s (LinkedIn scraping takes ~30-90s).
+    const res = await axios.post(
+      `https://api.apify.com/v2/acts/curious_coder~linkedin-jobs-scraper/run-sync-get-dataset-items?token=${APIFY_TOKEN}&format=json&clean=true`,
       input,
       {
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${APIFY_TOKEN}`,
-        },
-        timeout: 135_000, // 2min 15s — matches waitForFinish + buffer
+        headers: { "Content-Type": "application/json" },
+        timeout: 180_000, // 3 min
       }
     );
 
-    const run = runRes.data?.data;
-    if (!run?.defaultDatasetId) {
-      console.error("Apify run did not return a dataset ID", runRes.data);
-      return [];
-    }
-
-    console.log(`  ✅ Apify run ${run.id} finished — fetching results from dataset...`);
-
-    // Fetch results from the dataset
-    const dataRes = await axios.get(
-      `https://api.apify.com/v2/datasets/${run.defaultDatasetId}/items?clean=true&format=json`,
-      { headers: { Authorization: `Bearer ${APIFY_TOKEN}` }, timeout: 30_000 }
-    );
-
-    const items = dataRes.data || [];
+    const items = Array.isArray(res.data) ? res.data : [];
     console.log(`  📦 Apify returned ${items.length} LinkedIn jobs`);
 
     const results = [];
     for (const item of items) {
-      // Apify linkedin-jobs-scraper output shape:
-      // { id, title, company, location, url, description, salary, postedAt, ... }
-      const title = item.title || item.positionName || "";
-      const company = item.company || item.companyName || "";
-      const url = item.jobUrl || item.url || "";
+      // curious_coder output fields:
+      // positionName, companyName, location, jobUrl, descriptionText,
+      // postedAt, salary, contractType, companyUrl, applicantsCount
+      const title   = item.positionName || item.title || "";
+      const company = item.companyName  || item.company || "";
+      const url     = item.jobUrl       || item.url || "";
+
       if (!title || !url) continue;
 
       const stableKey = normalizeForId(title, company);
-      const id = `linkedin_apify_${Buffer.from(stableKey).toString("base64").substring(0, 32)}`;
+      const id = `linkedin_${Buffer.from(stableKey).toString("base64").substring(0, 32)}`;
 
       results.push({
         id,
@@ -333,18 +331,21 @@ export async function fetchLinkedInViaApify() {
         company,
         location: item.location || "Remote",
         url,
-        description: item.description?.substring(0, 3000) || "",
+        description: (item.descriptionText || item.description || "").substring(0, 3000),
         salary: item.salary || null,
         publishedAt: item.postedAt || item.publishedAt || null,
       });
     }
 
+    console.log(`  ✅ ${results.length} valid LinkedIn jobs parsed`);
     return results;
   } catch (e) {
     if (e.response?.status === 402) {
-      console.error("Apify: free credits exhausted for this month. LinkedIn scraping skipped.");
+      console.error("Apify: monthly free credits exhausted. LinkedIn scraping skipped this scan.");
+    } else if (e.response?.status === 400) {
+      console.error("Apify: bad input to Actor. Check LINKEDIN_SEARCH_QUERIES and input schema.", e.response?.data);
     } else if (e.code === "ECONNABORTED" || e.message?.includes("timeout")) {
-      console.error("Apify: Actor run timed out. Try again or increase waitForFinish.");
+      console.error("Apify: Actor timed out after 3 minutes. LinkedIn may be slow — try again.");
     } else {
       console.error("Apify LinkedIn error:", e.response?.data || e.message);
     }
@@ -354,8 +355,7 @@ export async function fetchLinkedInViaApify() {
 
 // ─────────────────────────────────────────────
 // JD enrichment via JSearch (LinkedIn only)
-// Only called if a LinkedIn job still has no description
-// after Apify (Apify normally returns full JDs)
+// Fallback for jobs without description after Apify
 // ─────────────────────────────────────────────
 const TARGET_TITLE_KEYWORDS = [
   "product manager", "head of product", "vp of product",
@@ -375,7 +375,7 @@ export async function enrichLinkedInJDs(linkedInJobs) {
   );
 
   if (toEnrich.length === 0) return linkedInJobs;
-  console.log(`  🔍 Enriching ${toEnrich.length} LinkedIn jobs with JSearch (Apify already provided the rest)...`);
+  console.log(`  🔍 Enriching ${toEnrich.length} LinkedIn jobs without JD via JSearch...`);
 
   const enriched = new Map();
   for (const job of toEnrich) {
@@ -572,7 +572,6 @@ export async function fetchAllJobs() {
     runScraper("EuroRemoteJobs", fetchEuroRemoteJobs),
   ]);
 
-  // Collect health per source
   const scraperHealth = {};
   for (const result of [remotive, himalayas, linkedIn, jsearch, serp, google, wwr, wellfound, remoteCo, workingNomads, jobspresso, euroRemote]) {
     if (result.status === "fulfilled") {
@@ -581,13 +580,9 @@ export async function fetchAllJobs() {
     }
   }
 
-  // Enrich LinkedIn jobs that still lack a description (Apify usually returns full JDs)
   const linkedInJobs = linkedIn.status === "fulfilled" ? linkedIn.value.jobs : [];
   const linkedInEnriched = await enrichLinkedInJDs(linkedInJobs);
 
-  // URL validation for sources that build synthetic URLs from slugs.
-  // LinkedIn (Apify), Remotive, JSearch, SerpAPI, Google are skipped —
-  // their URLs come directly from the data source.
   console.log("🔗 Validating URLs for slug-based sources...");
   const [himaJobs, wwrJobs, wellfoundJobs, remoteCoJobs, workingNomadsJobs, jobspressoJobs, euroRemoteJobs] =
     await Promise.all([
@@ -621,7 +616,6 @@ export async function fetchAllJobs() {
     ...euroRemoteJobs,
   ];
 
-  // Dedup por título-base + empresa
   const seen = new Set();
   const unique = all.filter((job) => {
     const titleBase = normalizeTitleForDedup(job.title);
